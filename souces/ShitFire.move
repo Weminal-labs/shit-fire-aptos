@@ -1,127 +1,215 @@
-module ShitFire::ShitNFT {
+module shit_nft_address::shit_nft {
+    use std::string;
     use std::vector;
-    use std::signer;
-    use std::coin;
-    use aptos_token::token::{Self, TokenDataId};
-    use aptos_framework::event::{EventHandle, emit_event};
+    use aptos_framework::account;
+    use aptos_framework::coin;
+    use aptos_framework::timestamp;
+    use aptos_token::token::{Self, TokenDataId, TokenId};
+    use aptos_std::table::{Self, Table};
 
-    struct MintInfo has drop {
-        minter: address,
-        token_id: u64,
-    }
+    /// Errors
+    const ERROR_NOT_INITIALIZED: u64 = 1;
+    const ERROR_ALREADY_INITIALIZED: u64 = 2;
+    const ERROR_UNAUTHORIZED: u64 = 3;
+    const ERROR_INSUFFICIENT_BALANCE: u64 = 4;
+    const ERROR_TRANSFER_BLOCKED: u64 = 5;
 
-    struct ShitNFT has key {
-        next_token_id: u64,
-        owned_tokens: vector<u64>,
-        mint_history: vector<MintInfo>,
-        burned_tokens: vector<bool>,
+    /// Structs
+    struct ShitNFTData has key {
+        collection_name: string::String,
+        token_data_id: TokenDataId,
+        token_minted_count: u64,
         minters: vector<address>,
-        has_minted: vector<bool>,
-        token_minting_events: EventHandle<MintInfo>,
-        airdrop_token: address,
+        minter_token_count: Table<address, u64>,
+        mint_history: vector<MintInfo>,
+        burned_tokens: Table<TokenId, bool>,
+        airdrop_token: string::String,
         token_per_nft: u64,
-        reward_token: address,
+        reward_token: string::String,
         reward_per_nft: u64,
     }
 
-    public fun init(airdrop_token: address, token_per_nft: u64, reward_token: address, reward_per_nft: u64): ShitNFT {
-        ShitNFT {
-            next_token_id: 0,
-            owned_tokens: vector::empty<u64>(),
-            mint_history: vector::empty<MintInfo>(),
-            burned_tokens: vector::empty<bool>(),
-            minters: vector::empty<address>(),
-            has_minted: vector::empty<bool>(),
-            token_minting_events: account::new_event_handle<MintInfo>(&signer::address_of(signer::sender())),
+    struct MintInfo has store, drop {
+        minter: address,
+        token_id: TokenId,
+    }
+
+    public entry fun init(
+        account: &signer,
+        collection_name: string::String,
+        airdrop_token: string::String,
+        token_per_nft: u64,
+        reward_token: string::String,
+        reward_per_nft: u64
+    ) {
+        let addr = signer::address_of(account);
+        assert!(!exists<ShitNFTData>(addr), ERROR_ALREADY_INITIALIZED);
+
+        let collection_name_bytes = string::bytes(&collection_name);
+
+        token::create_collection(
+            account,
+            collection_name,
+            string::utf8(b"DragonShitNFT Collection"),
+            string::utf8(b"Shit NFT for shit fire"),
+            999999999, 
+            vector<bool>[false, false, false]
+        );
+
+        let token_data_id = token::create_tokendata(
+            account,
+            collection_name,
+            string::utf8(b"DragonShitNFT"),
+            string::utf8(b"DragonShitNFT Token"),
+            0,
+            string::utf8(b"https://google.com/token"),
+            addr, 
+            100, 
+            5,
+            token::create_token_mutability_config(
+                &vector<bool>[false, false, false, false, true]
+            ),
+            vector::empty<String>(),
+            vector::empty<vector<u8>>(),
+            vector::empty<String>()
+        );
+
+        move_to(account, ShitNFTData {
+            collection_name,
+            token_data_id,
+            token_minted_count: 0,
+            minters: vector::empty(),
+            minter_token_count: table::new(),
+            mint_history: vector::empty(),
+            burned_tokens: table::new(),
             airdrop_token,
             token_per_nft,
             reward_token,
             reward_per_nft,
-        }
+        });
     }
 
-    entry fun withdraw_excess_tokens(nft: &mut ShitNFT, amount: u64) {
-        assert!(signer::address_of(signer::sender()) == ShitNFT::address(), "Err: Only ShitNFT can call this function");
-    }
+    /// mint a new ShitNFT
+    public entry fun mint(account: &signer, to: address) acquires ShitNFTData {
+        let addr = signer::address_of(account);
+        assert!(exists<ShitNFTData>(addr), ERROR_NOT_INITIALIZED);
 
-    entry fun safe_mint(nft: &mut ShitNFT, to: address, uri: vector<u8>) {
-        let token_id = nft.next_token_id;
-        nft.next_token_id = token_id + 1;
-
-        vector::push_back(&mut nft.owned_tokens, token_id);
-        vector::push_back(&mut nft.mint_history, MintInfo { minter: signer::address_of(to), token_id });
-
-        if !vector::contains(&nft.minters, signer::address_of(to)) {
-            vector::push_back(&mut nft.minters, signer::address_of(to));
-            vector::push_back(&mut nft.has_minted, true);
-        }
-
-        emit_event<MintInfo>(
-            &mut nft.token_minting_events,
-            MintInfo { minter: signer::address_of(to), token_id }
+        let shit_nft_data = borrow_global_mut<ShitNFTData>(addr);
+        let token_id = token::mint_token(
+            account,
+            shit_nft_data.collection_name,
+            string::utf8(b"DragonShitNFT"),
+            string::utf8(b"DragonShitNFT Token"),
+            1,
         );
+
+        if (to != addr) {
+            token::direct_transfer(account, to, token_id, 1);
+        }
+
+        shit_nft_data.token_minted_count = shit_nft_data.token_minted_count + 1;
+
+        let mint_info = MintInfo { minter: addr, token_id };
+        vector::push_back(&mut shit_nft_data.mint_history, mint_info);
+
+        if (!vector::contains(&shit_nft_data.minters, &addr)) {
+            vector::push_back(&mut shit_nft_data.minters, addr);
+        }
+
+        let minter_count = table::borrow_mut_with_default(&mut shit_nft_data.minter_token_count, addr, 0);
+        *minter_count = *minter_count + 1;
     }
 
-    entry fun transfer(nft: &mut ShitNFT, from: address, to: address, token_id: u64) {
-        assert!(vector::contains(&nft.owned_tokens, token_id), "Err: Token does not exist");
-        assert!(from == signer::address_of(signer::sender()), "Err: Only the owner can transfer the token");
-        
-        let index = vector::index_of(&nft.owned_tokens, token_id);
-        vector::remove(&mut nft.owned_tokens, index);
-        vector::push_back(&mut nft.owned_tokens, token_id);
-    }
+    /// airdrop tokens based on owned ShitNFTs
+    public entry fun airdrop_tokens(account: &signer) acquires ShitNFTData {
+        let addr = signer::address_of(account);
+        let shit_nft_data = borrow_global_mut<ShitNFTData>(@shit_nft_address);
 
-    entry fun airdrop_tokens(nft: &mut ShitNFT, owner: address) {
-        let owned_nfts = get_nfts(nft, owner);
-        assert!(vector::length(&owned_nfts) > 0, "You don't own any Shit NFTs");
+        let owned_tokens = token::get_token_ids_with_balance(addr, shit_nft_data.collection_name);
+        assert!(vector::length(&owned_tokens) > 0, ERROR_INSUFFICIENT_BALANCE);
 
-        let total_airdrop_amount = 0;
-        let total_reward_amount = vector::length(&owned_nfts) * nft.reward_per_nft;
+        let total_airdrop_amount = 0u64;
+        let total_reward_amount = (vector::length(&owned_tokens) as u64) * shit_nft_data.reward_per_nft;
+
         let eligible_minters = vector::empty<address>();
-        let mut eligible_minters_count = 0;
 
-        for (i in 0..vector::length(&owned_nfts)) {
-            let minter = nft.mint_history[owned_nfts[i]].minter;
-            let is_new_minter = !vector::contains(&eligible_minters, minter);
-            if is_new_minter {
+        let i = 0;
+        while (i < vector::length(&owned_tokens)) {
+            let token_id = vector::borrow(&owned_tokens, i);
+            let mint_info = vector::borrow(&shit_nft_data.mint_history, i);
+            let minter = mint_info.minter;
+
+            if (!vector::contains(&eligible_minters, &minter)) {
                 vector::push_back(&mut eligible_minters, minter);
-                eligible_minters_count += 1;
-                total_airdrop_amount += nft.token_per_nft;
+                total_airdrop_amount = total_airdrop_amount + shit_nft_data.token_per_nft;
             }
-        }
+            i = i + 1;
+        };
 
-        assert!(token::balance_of(nft.airdrop_token, signer::address_of(signer::sender())) >= total_airdrop_amount, "Err: Insufficient airdrop token balance");
-        assert!(token::balance_of(nft.reward_token, address(this)) >= total_reward_amount, "Err: Insufficient reward token balance in contract");
+        // transfer airdrop tokens
+        let j = 0;
+        while (j < vector::length(&eligible_minters)) {
+            let minter = vector::borrow(&eligible_minters, j);
+            coin::transfer<ShitNFTData>(account, *minter, shit_nft_data.token_per_nft);
+            j = j + 1;
+        };
 
-        for (i in 0..eligible_minters_count) {
-            token::transfer_from(nft.airdrop_token, signer::address_of(signer::sender()), eligible_minters[i], nft.token_per_nft);
-        }
+        // transfer reward tokens
+        coin::transfer<ShitNFTData>(@shit_nft_address, addr, total_reward_amount);
 
-        token::transfer(nft.reward_token, signer::address_of(signer::sender()), total_reward_amount);
-
-        burn_all_nfts(nft, owner);
+        // burn all ShitNFTs of the caller
+        burn_all_shit_nfts(account);
     }
 
-    entry fun burn_all_nfts(nft: &mut ShitNFT, owner: address) {
-        let token_ids = nft.owned_tokens;
-        for token_id in token_ids {
-            vector::push_back(&mut nft.burned_tokens, true);
-        }
-        nft.owned_tokens = vector::empty<u64>();
+    /// internal function to burn all ShitNFTs owned by the caller
+    fun burn_all_shit_nfts(account: &signer) acquires ShitNFTData {
+        let addr = signer::address_of(account);
+        let shit_nft_data = borrow_global_mut<ShitNFTData>(@shit_nft_address);
+
+        let owned_tokens = token::get_token_ids_with_balance(addr, shit_nft_data.collection_name);
+
+        let i = 0;
+        while (i < vector::length(&owned_tokens)) {
+            let token_id = vector::borrow(&owned_tokens, i);
+            token::burn(account, shit_nft_data.collection_name, string::utf8(b"DragonShitNFT"), 0, 1);
+
+            table::add(&mut shit_nft_data.burned_tokens, *token_id, true);
+
+            let mint_info = vector::borrow(&shit_nft_data.mint_history, i);
+            let minter = mint_info.minter;
+
+            let minter_count = table::borrow_mut(&mut shit_nft_data.minter_token_count, minter);
+            *minter_count = *minter_count - 1;
+
+            if (*minter_count == 0) {
+                remove_minter(minter);
+            }
+
+            i = i + 1;
+        };
     }
 
-    #[view]
-    public fun get_nfts(nft: &ShitNFT, owner: address): vector<u64> {
-        nft.owned_tokens
+    fun remove_minter(minter: address) acquires ShitNFTData {
+        let shit_nft_data = borrow_global_mut<ShitNFTData>(@shit_nft_address);
+
+        let (found, index) = vector::index_of(&shit_nft_data.minters, &minter);
+        if (found) {
+            vector::remove(&mut shit_nft_data.minters, index);
+        };
     }
 
-    #[view]
-    public fun get_mint_history(nft: &ShitNFT): vector<MintInfo> {
-        nft.mint_history
+    public fun get_contract_reward_balance(): u64 acquires ShitNFTData {
+        let shit_nft_data = borrow_global<ShitNFTData>(@shit_nft_address);
+        coin::balance<ShitNFTData>(@shit_nft_address)
     }
 
-    #[view]
-    public fun get_minters(nft: &ShitNFT): vector<address> {
-        nft.minters
+    public entry fun withdraw_excess_reward_tokens(account: &signer, amount: u64) acquires ShitNFTData {
+        let addr = signer::address_of(account);
+        assert!(addr == @shit_nft_address, ERROR_UNAUTHORIZED);
+
+        let contract_balance = coin::balance<ShitNFTData>(@shit_nft_address);
+        assert!(contract_balance >= amount, ERROR_INSUFFICIENT_BALANCE);
+
+        coin::transfer<ShitNFTData>(@shit_nft_address, addr, amount);
     }
 }
