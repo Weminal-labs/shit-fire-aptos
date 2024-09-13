@@ -2,7 +2,7 @@ module ShitFire::ShitNFT {
     use std::vector;
     use std::signer;
     use std::coin;
-    use aptos_framework::token;
+    use aptos_token::token::{Self, TokenDataId};
     use aptos_framework::event::{EventHandle, emit_event};
 
     struct MintInfo has drop {
